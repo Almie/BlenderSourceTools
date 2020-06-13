@@ -1756,9 +1756,8 @@ skeleton
 					wrinkle = []
 					wrinkleIndices = []
 
-					# what do these do?
-					#DmeVertexDeltaData["flipVCoordinates"] = False
-					#DmeVertexDeltaData["corrected"] = True
+					DmeVertexDeltaData["flexMin"] = 0.0
+					DmeVertexDeltaData["flexMax"] = 1.0
 
 					shape_pos = []
 					shape_posIndices = []
