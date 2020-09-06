@@ -423,7 +423,7 @@ class SmdImporter(bpy.types.Operator, Logger):
 
 		self.applyFrames(keyframes,num_frames)
 
-	def applyFrames(self,keyframes,num_frames, fps = None):
+	def applyFrames(self,keyframes,num_frames, fps = None, rootKeyframes = None):
 		smd = self.smd
 		ops.object.mode_set(mode='POSE')
 
@@ -527,6 +527,52 @@ class SmdImporter(bpy.types.Operator, Logger):
 					keyframes[bone] = [keyframes[bone][0]]
 
 			# Create Blender keyframes
+			def ApplyRootTransform():
+				if rootKeyframes:
+					curvesLoc = None
+					curvesRot = None
+					group = action.groups.new(name='rootTransform')
+					for keyframe in rootKeyframes:
+						if curvesLoc and curvesRot:
+							break
+						if keyframe.pos and not curvesLoc:
+							curvesLoc = []
+							for i in range(3):
+								curve = action.fcurves.new(data_path="location", index=i)
+								curve.group = group
+								curvesLoc.append(curve)
+						if keyframe.rot and not curvesRot:
+							curvesRot = []
+							for i in range(3 if smd.rotMode == 'XYZ' else 4):
+								curve = action.fcurves.new(data_path="rotation_" + ("euler" if smd.rotMode == 'XYZ' else "quaternion"),index=i)
+								curve.group = group
+								curvesRot.append(curve)
+
+					for keyframe in rootKeyframes:
+						# Transform
+						if smd.a.data.vs.legacy_rotation:
+							keyframe.matrix @= mat_BlenderToSMD.inverted()
+
+						smd.a.matrix_world = getUpAxisMat(smd.upAxis) @ keyframe.matrix
+
+						# Key location
+						if keyframe.pos:
+							for i in range(3):
+								curvesLoc[i].keyframe_points.add(1)
+								curvesLoc[i].keyframe_points[-1].co = [keyframe.frame, smd.a.location[i]]
+
+						# Key rotation
+						if keyframe.rot:
+							if smd.rotMode == 'XYZ':
+								for i in range(3):
+									curvesRot[i].keyframe_points.add(1)
+									curvesRot[i].keyframe_points[-1].co = [keyframe.frame, smd.a.rotation_euler[i]]
+							else:
+								for i in range(4):
+									curvesRot[i].keyframe_points.add(1)
+									curvesRot[i].keyframe_points[-1].co = [keyframe.frame, smd.a.rotation_quaternion[i]]
+
+
 			def ApplyRecursive(bone):
 				keys = keyframes.get(bone)
 				if keys:
@@ -583,6 +629,9 @@ class SmdImporter(bpy.types.Operator, Logger):
 				# Recurse
 				for child in bone.children:
 					ApplyRecursive(child)
+
+			if rootKeyframes:
+				ApplyRootTransform()
 
 			# Start keying
 			for bone in smd.a.pose.bones:
@@ -1680,14 +1729,24 @@ class SmdImporter(bpy.types.Operator, Logger):
 				total_frames = ceil(duration * frameRate) + 1 # need a frame for 0 too!
 
 				keyframes = collections.defaultdict(list)
+				rootKeyframes = []
 				unknown_bones = []
+
+				rootTransformID = DmeModel["transform"]
+				print('rootTranformID: ', rootTransformID)
+
+
 				for channel in animation["channels"]:
 					toElement = channel["toElement"]
 					if not toElement: continue # SFM
 
+					rootTransformImport = False
+					if toElement == rootTransformID:
+						rootTransformImport = True
+
 					bone_name = smd.boneTransformIDs.get(toElement.id)
 					bone = smd.a.pose.bones.get(bone_name) if bone_name else None
-					if not bone:
+					if not (bone or rootTransformImport):
 						if self.append != 'NEW_ARMATURE' and toElement.name not in unknown_bones:
 							unknown_bones.append(toElement.name)
 							print("- Animation refers to unrecognised bone \"{}\"".format(toElement.name))
@@ -1708,11 +1767,16 @@ class SmdImporter(bpy.types.Operator, Logger):
 						frame_value = values[i]
 
 						keyframe = KeyFrame()
-						keyframes[bone].append(keyframe)
+						if rootTransformImport:
+							rootKeyframes.append(keyframe)
+						else:
+							keyframes[bone].append(keyframe)
 
 						keyframe.frame = frame_time * frameRate
 
-						if not (bone.parent or keyframe.pos or keyframe.rot):
+						if rootTransformImport and not (keyframe.pos or keyframe.rot):
+							keyframe.matrix = getUpAxisMat(smd.upAxis).inverted()
+						elif not (bone.parent or keyframe.pos or keyframe.rot):
 							keyframe.matrix = getUpAxisMat(smd.upAxis).inverted()
 
 						if is_position_channel and not keyframe.pos:
@@ -1728,7 +1792,7 @@ class SmdImporter(bpy.types.Operator, Logger):
 					self.warning(get_id("importer_err_missingbones", True).format(smd.jobName,len(unknown_bones),smd.a.name))
 
 				# apply the keframes
-				self.applyFrames(keyframes,total_frames,frameRate)
+				self.applyFrames(keyframes,total_frames,frameRate,rootKeyframes)
 
 				bpy.context.scene.frame_end += int(round(start * 2 * frameRate,0))
 
